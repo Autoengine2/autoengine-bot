@@ -1,6 +1,4 @@
-// api/chat.js — Vercel Edge Function con CORS y guardrail de dominio
-// NO pongas tu API key aquí; la añadiremos en Vercel como variable de entorno en el siguiente paso.
-
+// api/chat.js — Vercel Edge Function con CORS + guardrails
 export const config = { runtime: "edge" };
 
 function clampLines(text, maxLines = 3) {
@@ -15,7 +13,7 @@ const SYSTEM_PROMPT =
   "Sé claro, directo y amable. No uses emojis. Español neutro.";
 
 function corsHeaders(origin) {
-  // Para salir del paso: permitir todos los orígenes. Luego lo limitamos al dominio de Framer.
+  // Para salir del paso dejamos *. Luego afinaremos con el dominio de Framer.
   return {
     "Access-Control-Allow-Origin": origin || "*",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -26,9 +24,11 @@ function corsHeaders(origin) {
 export default async function handler(req) {
   const origin = req.headers.get("origin") || "*";
 
+  // Preflight
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders(origin) });
   }
+
   if (req.method !== "POST") {
     return new Response(JSON.stringify({ error: "Method not allowed" }), {
       status: 405,
