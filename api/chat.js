@@ -1,4 +1,4 @@
-// api/chat.js — Vercel Serverless Function (Node) con CORS + guardrails + fallback local
+// api/chat.js — Demo con IA (no respuestas fijas), con guardrails en el system prompt
 
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -11,29 +11,23 @@ function clampLines(text, maxLines = 3) {
   return lines.slice(0, maxLines).join(" ").slice(0, 320);
 }
 
-function localFallback(message) {
-  const msg = String(message || "").toLowerCase();
+const SYSTEM_PROMPT = `
+Eres un asistente DEMO de AutoEngine.
 
-  if (/\b(horario|hora|abren|abrís|cerráis|cierran|abierto|abiertos)\b/.test(msg)) {
-    return "Abrimos de lunes a viernes de 9:00 a 19:00, y sábados de 10:00 a 14:00.";
-  }
-  if (/\b(reserva|reservar|cita|agendar|appointment|turno)\b/.test(msg)) {
-    return "Para reservar, dime día y hora preferidos (ej: 'viernes a las 17:30') y tu nombre.";
-  }
-  if (/\b(pedido|encargo|orden|order|comprar|precio|presupuesto)\b/.test(msg)) {
-    return "¿Qué te gustaría pedir? Indica producto y cantidad, y te confirmo disponibilidad.";
-  }
-  if (/\b(hola|buenas|qué tal|buenos días|buenas tardes|hey)\b/.test(msg)) {
-    return "¡Hola! Puedo ayudarte con horarios, reservas y pedidos. ¿Qué necesitas?";
-  }
-  return "Esta es una demo. Para verlo aplicado a tu negocio, agenda una llamada.";
-}
+Tu única función es responder como si fueras el chatbot de un negocio que atiende:
+- Horarios
+- Reservas
+- Pedidos
 
-const SYSTEM_PROMPT =
-  "Eres un asistente DEMO de AutoEngine. Responde SOLO sobre horarios, reservas y pedidos, " +
-  "y precios aproximados sin comprometer. Máximo 2–3 líneas. " +
-  "Si te preguntan algo fuera de esto, responde: 'Esta es una demo. Para verlo aplicado a tu negocio, agenda una llamada.' " +
-  "Sé claro, directo y amable. No uses emojis. Español neutro.";
+Responde en español neutro, en un máximo de 2–3 líneas.
+
+❌ Si el usuario pregunta algo fuera de estos temas (ej. ciencia, política, chistes), responde exactamente:
+"Esta es una demo. Solo puedo responder sobre horarios, reservas y pedidos."
+
+✅ Si preguntan por horarios, responde como si fueras una clínica o una pastelería (horarios de atención).
+✅ Si preguntan por reservas, responde como si pudieras tomar una cita o encargo.
+✅ Si preguntan por pedidos, responde como si pudieras recibir el pedido.
+`;
 
 export default async function handler(req, res) {
   cors(res);
@@ -43,13 +37,12 @@ export default async function handler(req, res) {
 
   try {
     let body = req.body;
-    if (typeof body === "string") {
-      try { body = JSON.parse(body); } catch {}
-    }
+    if (typeof body === "string") { try { body = JSON.parse(body); } catch {} }
     body = body && typeof body === "object" ? body : {};
 
     const message = typeof body.message === "string" ? body.message : "";
     const history = Array.isArray(body.history) ? body.history : [];
+
     if (!message.trim()) return res.status(400).json({ error: 'Missing "message" string' });
 
     const messages = [
@@ -60,8 +53,7 @@ export default async function handler(req, res) {
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      const reply = localFallback(message);
-      return res.status(200).json({ reply });
+      return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
     }
 
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -72,33 +64,24 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: "gpt-4o-mini",
-        temperature: 0.3,
+        temperature: 0.4,
         max_tokens: 120,
         messages,
       }),
     });
 
-    // Si falla la API, usa fallback local
     if (!r.ok) {
-      const reply = localFallback(message);
-      return res.status(200).json({ reply });
+      const errText = await r.text().catch(() => "");
+      return res.status(500).json({ error: "LLM error", detail: errText.slice(0, 300) });
     }
 
     const data = await r.json();
-    let raw =
-      data?.choices?.[0]?.message?.content ??
-      data?.choices?.[0]?.text ??
-      "";
+    const raw = data?.choices?.[0]?.message?.content?.trim() || "";
 
-    if (!raw || !String(raw).trim()) {
-      raw = localFallback(message);
-    }
-
-    const reply = clampLines(raw, 3);
+    const reply = clampLines(raw || "Esta es una demo. Solo puedo responder sobre horarios, reservas y pedidos.", 3);
     return res.status(200).json({ reply });
   } catch (e) {
-    const reply = localFallback("");
-    return res.status(200).json({ reply });
+    return res.status(500).json({ error: "Server error", detail: String(e?.message || e) });
   }
 }
 
