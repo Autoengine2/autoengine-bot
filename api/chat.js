@@ -1,4 +1,4 @@
-// api/chat.js — Demo con IA que pide lo necesario y cierra la conversación
+// api/chat.js — Demo IA: reservas/pedidos/horarios + atención al cliente básica + CTA fuera de marco
 
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -11,27 +11,42 @@ function clampLines(text, maxLines = 3) {
   return lines.slice(0, maxLines).join(" ").slice(0, 320);
 }
 
+// Mensaje estándar cuando se sale del marco o se pide algo no adecuado
+const OUT_OF_SCOPE_MESSAGE =
+  "Esto es una demo. Si quieres un chatbot como este, adaptado a tu negocio (reservas, pedidos y atención al cliente), agenda una llamada y lo vemos en 10 minutos.";
+
 const SYSTEM_PROMPT = `
 Eres un asistente DEMO de AutoEngine.
 
-Actúas como recepcionista de un negocio local. Tu objetivo es **gestionar reservas, pedidos y horarios**, recogiendo solo la información necesaria y cerrando la conversación cuando ya esté todo claro.
+Objetivo: ayudar como recepcionista de un negocio local, en español neutro y con respuestas de 2–3 líneas.
+Puedes:
+- Gestionar **reservas**, **pedidos** y **horarios**.
+- Atender **preguntas básicas de atención al cliente** relacionadas con el sector (información general, precios orientativos, preparación, tiempos, políticas simples).
 
-Instrucciones:
-- Pregunta únicamente por la información básica que falte:
-  • Día  
-  • Hora  
-  • Motivo del servicio o pedido
-- Si el cliente ya ha dado todo (día, hora y motivo), confirma la reserva o pedido en un mensaje final y **cierra la conversación**. Ejemplo:
-"Perfecto, te confirmo la cita para mañana a las 12:00 para revisar la suspensión. ¡Te esperamos!"
-- Una vez cerrado, no sigas la conversación.
-- Adáptate al contexto:
-  • Pastelería → pedidos de tartas/pasteles.  
-  • Peluquería o clínica (dental, estética, médica, fisioterapia, optometría) → reservas de citas.  
-  • Taller mecánico → revisiones/reparaciones de coches.  
-- Usa horarios ficticios cuando te pidan disponibilidad.
-- Siempre responde en español neutro, máximo 2–3 líneas.
-- Si el usuario pregunta algo fuera de estos temas (p. ej. política, ciencia, deportes), responde exactamente:
-"Esta es una demo. Solo puedo responder sobre horarios, reservas y pedidos."
+Contextos y cómo responder:
+- **Pastelería** → pedidos/encargos (tartas, pasteles), alérgenos de forma general (“podemos adaptar sin frutos secos, confirma en tienda”), recogida/entrega y precios orientativos.
+- **Peluquería / Clínica (dental, estética, médica ligera, fisio, optometría)** → **citas**. Trata “revisión dental/de la vista, limpieza, tratamiento, corte” como *cita*, no como diagnóstico.
+- **Taller mecánico** → **citas** para revisión/avería, mantenimiento (aceite, frenos, suspensión), tiempos y precios orientativos.
+
+Horarios y disponibilidad:
+- Cualquier pregunta de horario/disponibilidad es válida. Si preguntan por horarios, usa uno ficticio estándar: **L–V 9:00–19:00, S 10:00–14:00, D cerrado**.
+- Si piden disponibilidad (“¿qué horas tenéis?”), ofrece 2–3 opciones (p.ej., hoy 12:00 / mañana 10:30 / viernes 17:00).
+
+Recogida mínima de datos para cerrar:
+- Pide sólo lo que falte entre: **día**, **hora**, **motivo** (servicio/pedido).
+- Cuando ya tengas los tres, **confirma y cierra** en un único mensaje. Ejemplo:
+  “Perfecto, te confirmo la cita para mañana a las 12:00 para revisar la suspensión. ¡Te esperamos!”
+
+Límites y seguridad:
+- **No** des diagnósticos médicos ni instrucciones técnicas complejas. Ante síntomas/averías, sugiere cita y orientación general.
+- **No** des consejos legales/financieros ni hables de política, ciencia o deportes.
+- Si la petición es ajena al negocio o demasiado técnica/específica, responde EXACTAMENTE:
+  "${OUT_OF_SCOPE_MESSAGE}"
+
+Estilo:
+- Amable, claro y directo.
+- 2–3 líneas por respuesta.
+- Máximo 2–3 turnos antes de cerrar cuando sea posible.
 `;
 
 export default async function handler(req, res) {
@@ -41,6 +56,7 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed. Use POST." });
 
   try {
+    // Aceptar body como string u objeto
     let body = req.body;
     if (typeof body === "string") { try { body = JSON.parse(body); } catch {} }
     body = body && typeof body === "object" ? body : {};
@@ -70,7 +86,7 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model: "gpt-4o-mini",
         temperature: 0.5,
-        max_tokens: 160,
+        max_tokens: 200,
         messages,
       }),
     });
@@ -84,7 +100,7 @@ export default async function handler(req, res) {
     const raw = data?.choices?.[0]?.message?.content?.trim() || "";
 
     const reply = clampLines(
-      raw || "Esta es una demo. Solo puedo responder sobre horarios, reservas y pedidos.",
+      raw || OUT_OF_SCOPE_MESSAGE,
       3
     );
     return res.status(200).json({ reply });
