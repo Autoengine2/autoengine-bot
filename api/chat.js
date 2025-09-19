@@ -1,9 +1,9 @@
-// api/chat.js — Vercel Serverless Function (Node, CommonJS) con CORS + guardrails
+// api/chat.js — Vercel Serverless Function (Node) con CORS + guardrails
 
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*"); // luego afinamos con tu dominio de Framer
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
 function clampLines(text, maxLines = 3) {
@@ -17,36 +17,36 @@ const SYSTEM_PROMPT =
   "Si te preguntan algo fuera de esto, responde: 'Esta es una demo. Para verlo aplicado a tu negocio, agenda una llamada.' " +
   "Sé claro, directo y amable. No uses emojis. Español neutro.";
 
-module.exports = async (req, res) => {
+export default async function handler(req, res) {
   cors(res);
 
-  if (req.method === "OPTIONS") {
-    res.status(204).end();
-    return;
-  }
-
-  if (req.method !== "POST") {
-    res.status(405).json({ error: "Method not allowed" });
-    return;
-  }
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed. Use POST." });
 
   try {
-    const { message = "", history = [] } = req.body || {};
-    if (!message || typeof message !== "string") {
-      res.status(400).json({ error: 'Missing "message" string' });
-      return;
+    // 👇 Soportar body como string o como objeto ya parseado
+    let body = req.body;
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch {}
+    }
+    body = body && typeof body === "object" ? body : {};
+
+    const message = typeof body.message === "string" ? body.message : "";
+    const history = Array.isArray(body.history) ? body.history : [];
+
+    if (!message.trim()) {
+      return res.status(400).json({ error: 'Missing "message" string' });
     }
 
     const messages = [
       { role: "system", content: SYSTEM_PROMPT },
-      ...[].concat(history || []).slice(-8),
+      ...history.slice(-8),
       { role: "user", content: message },
     ];
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      res.status(500).json({ error: "Missing OPENAI_API_KEY" });
-      return;
+      return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
     }
 
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -65,8 +65,7 @@ module.exports = async (req, res) => {
 
     if (!r.ok) {
       const errText = await r.text().catch(() => "");
-      res.status(500).json({ error: "LLM error", detail: errText.slice(0, 300) });
-      return;
+      return res.status(500).json({ error: "LLM error", detail: errText.slice(0, 300) });
     }
 
     const data = await r.json();
@@ -75,9 +74,10 @@ module.exports = async (req, res) => {
       "Esta es una demo. Para verlo aplicado a tu negocio, agenda una llamada.";
     const reply = clampLines(raw, 3);
 
-    res.status(200).json({ reply });
+    return res.status(200).json({ reply });
   } catch (e) {
-    res.status(500).json({ error: "Server error", detail: String(e?.message || e) });
+    return res.status(500).json({ error: "Server error", detail: String(e?.message || e) });
   }
-};
+}
+
 
