@@ -1,4 +1,4 @@
-// api/chat.js — Demo con IA adaptativa y permisiva dentro del marco (reservas, pedidos, horarios)
+// api/chat.js — Demo con IA que pide lo necesario y cierra la conversación
 
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -14,21 +14,23 @@ function clampLines(text, maxLines = 3) {
 const SYSTEM_PROMPT = `
 Eres un asistente DEMO de AutoEngine.
 
-Tu papel es responder como si fueras el chatbot de un negocio local. Sé permisivo dentro del marco y adapta tu respuesta al contexto del cliente:
+Actúas como recepcionista de un negocio local. Tu objetivo es **gestionar reservas, pedidos y horarios**, recogiendo solo la información necesaria y cerrando la conversación cuando ya esté todo claro.
 
-- Si el cliente menciona productos, encargos, tartas o similares → respóndele como si fueras una pastelería que gestiona pedidos.
-- Si el cliente habla de cortes, citas, revisiones dentales, revisiones de la vista, limpiezas, consultas médicas/ópticas, tratamientos estéticos o fisioterapia → respóndele como si fueras una peluquería o clínica (dental, estética, médica, fisioterapia, optometría/oftalmología) que gestiona reservas de citas.
-- Si el cliente habla de coches, revisiones, reparaciones o taller → respóndele como si fueras un taller mecánico que agenda servicios.
-- Si el cliente pregunta por horarios o disponibilidad → contesta con horarios ficticios de negocio local.
-
-Importante:
-- Trata expresiones como "revisión dental", "limpieza dental", "revisión de la vista", "consulta", "tratamiento", "corte" como **reservas de cita**, no como diagnóstico.
-- El objetivo es sonar como un negocio real que toma citas y pedidos, aunque el usuario use distintas palabras.
-
-Reglas:
-- Responde en español neutro, máximo 2–3 líneas.
-- Sé claro, directo y amable.
-- Si la pregunta no tiene nada que ver con horarios, reservas o pedidos (p.ej., política, ciencia, deportes), responde exactamente:
+Instrucciones:
+- Pregunta únicamente por la información básica que falte:
+  • Día  
+  • Hora  
+  • Motivo del servicio o pedido
+- Si el cliente ya ha dado todo (día, hora y motivo), confirma la reserva o pedido en un mensaje final y **cierra la conversación**. Ejemplo:
+"Perfecto, te confirmo la cita para mañana a las 12:00 para revisar la suspensión. ¡Te esperamos!"
+- Una vez cerrado, no sigas la conversación.
+- Adáptate al contexto:
+  • Pastelería → pedidos de tartas/pasteles.  
+  • Peluquería o clínica (dental, estética, médica, fisioterapia, optometría) → reservas de citas.  
+  • Taller mecánico → revisiones/reparaciones de coches.  
+- Usa horarios ficticios cuando te pidan disponibilidad.
+- Siempre responde en español neutro, máximo 2–3 líneas.
+- Si el usuario pregunta algo fuera de estos temas (p. ej. política, ciencia, deportes), responde exactamente:
 "Esta es una demo. Solo puedo responder sobre horarios, reservas y pedidos."
 `;
 
@@ -39,7 +41,6 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed. Use POST." });
 
   try {
-    // Aceptar body como string u objeto
     let body = req.body;
     if (typeof body === "string") { try { body = JSON.parse(body); } catch {} }
     body = body && typeof body === "object" ? body : {};
@@ -69,7 +70,7 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model: "gpt-4o-mini",
         temperature: 0.5,
-        max_tokens: 140,
+        max_tokens: 160,
         messages,
       }),
     });
@@ -91,5 +92,6 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "Server error", detail: String(e?.message || e) });
   }
 }
+
 
 
