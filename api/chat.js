@@ -1,4 +1,4 @@
-// api/chat.js — Demo con IA (no respuestas fijas), con guardrails en el system prompt
+// api/chat.js — Demo con IA adaptativa según contexto de negocio local
 
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -14,19 +14,18 @@ function clampLines(text, maxLines = 3) {
 const SYSTEM_PROMPT = `
 Eres un asistente DEMO de AutoEngine.
 
-Tu única función es responder como si fueras el chatbot de un negocio que atiende:
-- Horarios
-- Reservas
-- Pedidos
+Tu papel es responder como si fueras el chatbot de un negocio local.
+Adáptate al contexto de la conversación:
 
-Responde en español neutro, en un máximo de 2–3 líneas.
+- Si parece un cliente de una pastelería, respóndele como si gestionaras pedidos de tartas o pasteles.
+- Si parece un cliente de una peluquería o clínica (dental, estética, médica), respóndele como si gestionaras reservas de citas.
+- Si parece un cliente de un taller mecánico, respóndele como si agendaras revisiones o reparaciones de coches.
 
-❌ Si el usuario pregunta algo fuera de estos temas (ej. ciencia, política, chistes), responde exactamente:
+Reglas:
+- Siempre responde en español neutro, máximo 2–3 líneas.
+- Solo responde sobre horarios, reservas o pedidos.
+- Si preguntan algo fuera de eso, responde exactamente:
 "Esta es una demo. Solo puedo responder sobre horarios, reservas y pedidos."
-
-✅ Si preguntan por horarios, responde como si fueras una clínica o una pastelería (horarios de atención).
-✅ Si preguntan por reservas, responde como si pudieras tomar una cita o encargo.
-✅ Si preguntan por pedidos, responde como si pudieras recibir el pedido.
 `;
 
 export default async function handler(req, res) {
@@ -64,7 +63,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: "gpt-4o-mini",
-        temperature: 0.4,
+        temperature: 0.5,
         max_tokens: 120,
         messages,
       }),
@@ -78,7 +77,10 @@ export default async function handler(req, res) {
     const data = await r.json();
     const raw = data?.choices?.[0]?.message?.content?.trim() || "";
 
-    const reply = clampLines(raw || "Esta es una demo. Solo puedo responder sobre horarios, reservas y pedidos.", 3);
+    const reply = clampLines(
+      raw || "Esta es una demo. Solo puedo responder sobre horarios, reservas y pedidos.",
+      3
+    );
     return res.status(200).json({ reply });
   } catch (e) {
     return res.status(500).json({ error: "Server error", detail: String(e?.message || e) });
