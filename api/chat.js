@@ -1,7 +1,7 @@
-// api/chat.js — Vercel Serverless Function (Node) con CORS + guardrails
+// api/chat.js — Vercel Serverless Function (Node) con CORS + guardrails + fallback local
 
 function cors(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*"); // luego afinamos con tu dominio de Framer
+  res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
@@ -9,6 +9,24 @@ function cors(res) {
 function clampLines(text, maxLines = 3) {
   const lines = String(text || "").trim().split(/\r?\n/).filter(Boolean);
   return lines.slice(0, maxLines).join(" ").slice(0, 320);
+}
+
+function localFallback(message) {
+  const msg = String(message || "").toLowerCase();
+
+  if (/\b(horario|hora|abren|abrís|cerráis|cierran|abierto|abiertos)\b/.test(msg)) {
+    return "Abrimos de lunes a viernes de 9:00 a 19:00, y sábados de 10:00 a 14:00.";
+  }
+  if (/\b(reserva|reservar|cita|agendar|appointment|turno)\b/.test(msg)) {
+    return "Para reservar, dime día y hora preferidos (ej: 'viernes a las 17:30') y tu nombre.";
+  }
+  if (/\b(pedido|encargo|orden|order|comprar|precio|presupuesto)\b/.test(msg)) {
+    return "¿Qué te gustaría pedir? Indica producto y cantidad, y te confirmo disponibilidad.";
+  }
+  if (/\b(hola|buenas|qué tal|buenos días|buenas tardes|hey)\b/.test(msg)) {
+    return "¡Hola! Puedo ayudarte con horarios, reservas y pedidos. ¿Qué necesitas?";
+  }
+  return "Esta es una demo. Para verlo aplicado a tu negocio, agenda una llamada.";
 }
 
 const SYSTEM_PROMPT =
@@ -24,7 +42,6 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed. Use POST." });
 
   try {
-    // 👇 Soportar body como string o como objeto ya parseado
     let body = req.body;
     if (typeof body === "string") {
       try { body = JSON.parse(body); } catch {}
@@ -33,10 +50,7 @@ export default async function handler(req, res) {
 
     const message = typeof body.message === "string" ? body.message : "";
     const history = Array.isArray(body.history) ? body.history : [];
-
-    if (!message.trim()) {
-      return res.status(400).json({ error: 'Missing "message" string' });
-    }
+    if (!message.trim()) return res.status(400).json({ error: 'Missing "message" string' });
 
     const messages = [
       { role: "system", content: SYSTEM_PROMPT },
@@ -46,7 +60,8 @@ export default async function handler(req, res) {
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
+      const reply = localFallback(message);
+      return res.status(200).json({ reply });
     }
 
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -63,20 +78,27 @@ export default async function handler(req, res) {
       }),
     });
 
+    // Si falla la API, usa fallback local
     if (!r.ok) {
-      const errText = await r.text().catch(() => "");
-      return res.status(500).json({ error: "LLM error", detail: errText.slice(0, 300) });
+      const reply = localFallback(message);
+      return res.status(200).json({ reply });
     }
 
     const data = await r.json();
-    const raw =
-      data?.choices?.[0]?.message?.content ||
-      "Esta es una demo. Para verlo aplicado a tu negocio, agenda una llamada.";
-    const reply = clampLines(raw, 3);
+    let raw =
+      data?.choices?.[0]?.message?.content ??
+      data?.choices?.[0]?.text ??
+      "";
 
+    if (!raw || !String(raw).trim()) {
+      raw = localFallback(message);
+    }
+
+    const reply = clampLines(raw, 3);
     return res.status(200).json({ reply });
   } catch (e) {
-    return res.status(500).json({ error: "Server error", detail: String(e?.message || e) });
+    const reply = localFallback("");
+    return res.status(200).json({ reply });
   }
 }
 
