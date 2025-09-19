@@ -1,4 +1,4 @@
-// api/chat.js — Vercel Serverless Function (Node) con CORS + guardrails
+// api/chat.js — Vercel Serverless Function (Node, CommonJS) con CORS + guardrails
 
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*"); // luego afinamos con tu dominio de Framer
@@ -17,22 +17,24 @@ const SYSTEM_PROMPT =
   "Si te preguntan algo fuera de esto, responde: 'Esta es una demo. Para verlo aplicado a tu negocio, agenda una llamada.' " +
   "Sé claro, directo y amable. No uses emojis. Español neutro.";
 
-export default async function handler(req, res) {
+module.exports = async (req, res) => {
   cors(res);
 
-  // Preflight
   if (req.method === "OPTIONS") {
-    return res.status(204).end();
+    res.status(204).end();
+    return;
   }
 
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+    res.status(405).json({ error: "Method not allowed" });
+    return;
   }
 
   try {
     const { message = "", history = [] } = req.body || {};
     if (!message || typeof message !== "string") {
-      return res.status(400).json({ error: 'Missing "message" string' });
+      res.status(400).json({ error: 'Missing "message" string' });
+      return;
     }
 
     const messages = [
@@ -43,7 +45,8 @@ export default async function handler(req, res) {
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
+      res.status(500).json({ error: "Missing OPENAI_API_KEY" });
+      return;
     }
 
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -62,7 +65,8 @@ export default async function handler(req, res) {
 
     if (!r.ok) {
       const errText = await r.text().catch(() => "");
-      return res.status(500).json({ error: "LLM error", detail: errText.slice(0, 300) });
+      res.status(500).json({ error: "LLM error", detail: errText.slice(0, 300) });
+      return;
     }
 
     const data = await r.json();
@@ -71,9 +75,9 @@ export default async function handler(req, res) {
       "Esta es una demo. Para verlo aplicado a tu negocio, agenda una llamada.";
     const reply = clampLines(raw, 3);
 
-    return res.status(200).json({ reply });
+    res.status(200).json({ reply });
   } catch (e) {
-    return res.status(500).json({ error: "Server error", detail: String(e?.message || e) });
+    res.status(500).json({ error: "Server error", detail: String(e?.message || e) });
   }
-}
+};
 
