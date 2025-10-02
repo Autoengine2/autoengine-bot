@@ -1,4 +1,4 @@
-// api/chat.js — Versión estable (sector autodetect, fuera-de-marco estricto, anti-bucle, cierre S/F/H)
+// api/chat.js — Estable, natural y sin bucles (sector autodetect, nombre obligatorio, fuera-de-marco estricto)
 
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -6,6 +6,9 @@ function cors(res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   res.setHeader("Cache-Control", "no-store");
 }
+
+// ⛔ Requiere NOMBRE antes de cerrar (cambia a false si no quieres exigirlo)
+const REQUIRE_NAME = true;
 
 const OUT_OF_SCOPE_MESSAGE =
   "Esto es una demo. Si quieres un chatbot como este, adaptado a tu negocio (reservas, pedidos y atención al cliente), agenda una llamada y lo vemos en 10 minutos.";
@@ -15,7 +18,7 @@ Eres “AutoEngine – ChatBot de Demostración”. Español claro y cercano, re
 Te adaptas al sector (pastelería, peluquería/estética, clínica dental/óptica/fisio, taller mecánico).
 
 OBJETIVO:
-- Ayudar rápido. Si el usuario ya dio servicio, fecha y hora, confirma en un único mensaje y termina.
+- Ayudar rápido. Cuando el usuario haya dado servicio, fecha, hora y nombre, confirma en un único mensaje y termina.
 - Si falta info, pide EXACTAMENTE 1 dato (no más), con tono amable.
 
 REGLAS:
@@ -80,7 +83,6 @@ function inferSector(text, provided) {
   if (SERVICE_HINTS.taller.some(k => t.includes(k))) return "taller";
   if (SERVICE_HINTS.peluqueria.some(k => t.includes(k))) return "peluqueria";
   if (SERVICE_HINTS.pasteleria.some(k => t.includes(k))) return "pasteleria";
-  // heurística: palabras genéricas
   if (/\bdoctor|m[eé]dico|dentista|cita m[eé]dica|consulta\b/.test(t)) return "clinica";
   return null;
 }
@@ -89,10 +91,7 @@ function isClearlyOffTopic(text) {
   const t = (text||"").toLowerCase();
   return CLEARLY_OFFTOPIC.some(k => t.includes(k));
 }
-
-function isGreeting(t="") {
-  return /\b(hola|buenas|qué tal|que tal|hey|hola!?)\b/i.test(t);
-}
+function isGreeting(t="") { return /\b(hola|buenas|qué tal|que tal|hey|hola!?)\b/i.test(t); }
 
 // ===== Extracción de entidades =====
 function extractNombre(text) {
@@ -147,16 +146,18 @@ function extractEntities(msg, sector) {
   return { servicio, fecha, hora, nombre };
 }
 
-function computeMissing(entities={}) {
+function computeMissing(entities = {}) {
   const miss = [];
   if (!entities.servicio) miss.push("servicio");
   if (!entities.fecha)    miss.push("fecha");
   if (!entities.hora)     miss.push("hora");
-  return miss; // nombre opcional
+  if (REQUIRE_NAME && !entities.nombre) miss.push("nombre");
+  return miss;
 }
 
-function detectClosed(entities={}) {
-  return !!(entities.servicio && entities.fecha && entities.hora);
+function detectClosed(entities = {}) {
+  const core = !!(entities.servicio && entities.fecha && entities.hora);
+  return REQUIRE_NAME ? (core && !!entities.nombre) : core;
 }
 
 // ===== Handler =====
@@ -250,11 +251,10 @@ export default async function handler(req, res) {
       obj.ui_actions.chips = ["Reservar cita","Ver horarios","Hablar con persona"];
     }
 
-    // Cierre determinista (servicio + fecha + hora)
+    // Cierre determinista (requiere nombre si REQUIRE_NAME=true)
     if (closed) {
       const { servicio: s, fecha: f, hora: h, nombre: n } = entities;
-      const who = n ? `, ${n}` : "";
-      obj.reply = clamp(`Perfecto${who}. Te confirmo la cita para ${f} a las ${h} para ${s}. ¡Te esperamos!`);
+      obj.reply = clamp(`Perfecto, ${n}. Te confirmo la cita para ${f} a las ${h} para ${s}. ¡Te esperamos!`);
       obj.ui_actions.chips = ["Guardar recordatorio", "Cómo llegar"];
       obj.ui_actions.cta = null;
     } else if (!firstTurn) {
@@ -264,13 +264,15 @@ export default async function handler(req, res) {
         const qs = {
           servicio: "¿Qué servicio necesitas exactamente?",
           fecha: "¿Qué día te va mejor?",
-          hora: "¿A qué hora te viene bien?"
+          hora: "¿A qué hora te viene bien?",
+          nombre: "¿A nombre de quién dejamos la cita?"
         }[need];
         obj.reply = clamp(obj.reply || qs || "¿Podrías confirmar un dato?");
         obj.ui_actions.chips = obj.ui_actions.chips?.length ? obj.ui_actions.chips.slice(0,3) :
           (need === "fecha" ? ["Mañana","Viernes","Lunes"] :
            need === "hora" ? ["10:00","12:00","17:00"] :
-           ["Limpieza","Revisión","Consulta"]);
+           need === "servicio" ? ["Limpieza","Revisión","Consulta"] :
+           need === "nombre" ? ["Ana","Carlos","Lucía"] : []);
       }
     }
 
