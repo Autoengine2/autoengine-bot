@@ -1,4 +1,4 @@
-// api/chat.js — Estable, natural y sin bucles (sector autodetect, nombre obligatorio, fuera-de-marco estricto)
+// api/chat.js — Estable y natural (sector autodetect, nombre obligatorio, restaurante pide "personas")
 
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -7,7 +7,7 @@ function cors(res) {
   res.setHeader("Cache-Control", "no-store");
 }
 
-// ⛔ Requiere NOMBRE antes de cerrar (cambia a false si no quieres exigirlo)
+// ⛔ Requiere NOMBRE antes de cerrar en todos los sectores
 const REQUIRE_NAME = true;
 
 const OUT_OF_SCOPE_MESSAGE =
@@ -15,10 +15,10 @@ const OUT_OF_SCOPE_MESSAGE =
 
 const SYSTEM_PROMPT = `
 Eres “AutoEngine – ChatBot de Demostración”. Español claro y cercano, respuestas de 1–2 líneas.
-Te adaptas al sector (pastelería, peluquería/estética, clínica dental/óptica/fisio, taller mecánico).
+Te adaptas al sector (pastelería, peluquería/estética, clínica dental/óptica/fisio, taller mecánico, restaurante).
 
 OBJETIVO:
-- Ayudar rápido. Cuando el usuario haya dado servicio, fecha, hora y nombre, confirma en un único mensaje y termina.
+- Ayudar rápido. Cuando el usuario haya dado servicio, fecha, hora y nombre (y si el sector es restaurante, también personas), confirma en un único mensaje y termina.
 - Si falta info, pide EXACTAMENTE 1 dato (no más), con tono amable.
 
 REGLAS:
@@ -42,7 +42,7 @@ FORMATO JSON ESTRICTO:
   "data": {
     "intent": "<faq|pedido|cita|precio|horario|otro>",
     "missing_fields": [],
-    "entities": {"servicio":"", "fecha":"", "hora":"", "nombre":""},
+    "entities": {"servicio":"", "fecha":"", "hora":"", "nombre":"", "personas":""},
     "closed": false
   }
 }
@@ -68,7 +68,11 @@ const SERVICE_HINTS = {
     "embrague","diagnóstico","diagnostico","alineado","suspensión","suspension"
   ],
   "peluqueria": ["corte","tinte","mechas","manicura","barba","peinado","keratina"],
-  "pasteleria": ["tarta","roscón","roscon","pasteles","encargo","sin gluten","gluten free"]
+  "pasteleria": ["tarta","roscón","roscon","pasteles","encargo","sin gluten","gluten free"],
+  "restaurante": [
+    "restaurante","restaurant","mesa","reservar mesa","reserva mesa","comida","cena","almuerzo",
+    "menú","menu","degustación","degustacion","pax","personas"
+  ]
 };
 
 const CLEARLY_OFFTOPIC = [
@@ -79,6 +83,7 @@ const CLEARLY_OFFTOPIC = [
 function inferSector(text, provided) {
   if (provided) return provided;
   const t = (text||"").toLowerCase();
+  if (SERVICE_HINTS.restaurante.some(k => t.includes(k))) return "restaurante";
   if (SERVICE_HINTS.clinica.some(k => t.includes(k))) return "clinica";
   if (SERVICE_HINTS.taller.some(k => t.includes(k))) return "taller";
   if (SERVICE_HINTS.peluqueria.some(k => t.includes(k))) return "peluqueria";
@@ -94,6 +99,10 @@ function isClearlyOffTopic(text) {
 function isGreeting(t="") { return /\b(hola|buenas|qué tal|que tal|hey|hola!?)\b/i.test(t); }
 
 // ===== Extracción de entidades =====
+const WORD2NUM = {
+  "uno":1,"una":1,"dos":2,"tres":3,"cuatro":4,"cinco":5,"seis":6,"siete":7,"ocho":8,"nueve":9,"diez":10
+};
+
 function extractNombre(text) {
   const t = (text||"").trim();
   const pats = [
@@ -111,6 +120,22 @@ function extractNombre(text) {
   }
   if (/^[a-záéíóúüñ]{2,20}$/i.test(t)) return t;
   return null;
+}
+
+function extractPersonas(text) {
+  const t = (text||"").toLowerCase();
+  // "mesa para 4", "para cuatro", "4 personas", "4 pax"
+  let m = t.match(/\b(?:para\s+)?(\d{1,2})\s*(?:personas?|pax|px)?\b/);
+  if (m) {
+    const n = parseInt(m[1], 10);
+    if (n >= 1 && n <= 20) return String(n);
+  }
+  // palabras
+  for (const w in WORD2NUM) {
+    const re = new RegExp(`\\b(?:para\\s+)?${w}\\b`);
+    if (re.test(t)) return String(WORD2NUM[w]);
+  }
+  return "";
 }
 
 function extractEntities(msg, sector) {
@@ -140,24 +165,31 @@ function extractEntities(msg, sector) {
     ...new Set(Object.values(SERVICE_HINTS).flat())
   ];
   for (const k of hints) { if (text.includes(k)) { servicio = k; break; } }
+  // Si es restaurante y habla de "mesa", fuerza un servicio genérico
+  if (!servicio && sector === "restaurante" && /\bmesa|reservar mesa|reserva\b/.test(text)) {
+    servicio = "reserva de mesa";
+  }
 
   const nombre = extractNombre(msg);
+  const personas = sector === "restaurante" ? extractPersonas(msg) : "";
 
-  return { servicio, fecha, hora, nombre };
+  return { servicio, fecha, hora, nombre, personas };
 }
 
-function computeMissing(entities = {}) {
+function computeMissing(entities = {}, sector = null) {
   const miss = [];
   if (!entities.servicio) miss.push("servicio");
   if (!entities.fecha)    miss.push("fecha");
   if (!entities.hora)     miss.push("hora");
   if (REQUIRE_NAME && !entities.nombre) miss.push("nombre");
+  if (sector === "restaurante" && !entities.personas) miss.push("personas");
   return miss;
 }
 
-function detectClosed(entities = {}) {
-  const core = !!(entities.servicio && entities.fecha && entities.hora);
-  return REQUIRE_NAME ? (core && !!entities.nombre) : core;
+function detectClosed(entities = {}, sector = null) {
+  const core = !!(entities.servicio && entities.fecha && entities.hora && entities.nombre);
+  const needPeople = sector === "restaurante";
+  return needPeople ? (core && !!entities.personas) : core;
 }
 
 // ===== Handler =====
@@ -177,7 +209,7 @@ export default async function handler(req, res) {
     if (!message) return res.status(400).json({ error: 'Missing "message" string' });
 
     // Sector: usa el que viene o infiérelo por el texto
-    const sector = inferSector(message, sectorProvided) || sectorProvided;
+    const sector = (inferSector(message, sectorProvided) || sectorProvided);
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
@@ -234,8 +266,8 @@ export default async function handler(req, res) {
     const fromHistory = extractEntities(lastUserTurns, sector);
     const entities = { ...fromModel, ...fromHistory, ...fromUser };
 
-    const missing = computeMissing(entities);
-    const closed = detectClosed(entities);
+    const missing = computeMissing(entities, sector);
+    const closed = detectClosed(entities, sector);
 
     // Normalizar estructura
     obj.data = obj.data || {};
@@ -251,10 +283,11 @@ export default async function handler(req, res) {
       obj.ui_actions.chips = ["Reservar cita","Ver horarios","Hablar con persona"];
     }
 
-    // Cierre determinista (requiere nombre si REQUIRE_NAME=true)
+    // Cierre determinista (nombre obligatorio + personas si restaurante)
     if (closed) {
-      const { servicio: s, fecha: f, hora: h, nombre: n } = entities;
-      obj.reply = clamp(`Perfecto, ${n}. Te confirmo la cita para ${f} a las ${h} para ${s}. ¡Te esperamos!`);
+      const { servicio: s, fecha: f, hora: h, nombre: n, personas: p } = entities;
+      const extra = (sector === "restaurante" && p) ? ` para ${p} personas` : "";
+      obj.reply = clamp(`Perfecto, ${n}. Te confirmo ${s}${extra} el ${f} a las ${h}. ¡Te esperamos!`);
       obj.ui_actions.chips = ["Guardar recordatorio", "Cómo llegar"];
       obj.ui_actions.cta = null;
     } else if (!firstTurn) {
@@ -262,16 +295,18 @@ export default async function handler(req, res) {
       const need = missing[0];
       if (need) {
         const qs = {
-          servicio: "¿Qué servicio necesitas exactamente?",
+          servicio: sector === "restaurante" ? "¿Es para reservar una mesa?" : "¿Qué servicio necesitas exactamente?",
           fecha: "¿Qué día te va mejor?",
           hora: "¿A qué hora te viene bien?",
-          nombre: "¿A nombre de quién dejamos la cita?"
+          nombre: "¿A nombre de quién dejamos la reserva?",
+          personas: "¿Para cuántas personas es la mesa?"
         }[need];
         obj.reply = clamp(obj.reply || qs || "¿Podrías confirmar un dato?");
         obj.ui_actions.chips = obj.ui_actions.chips?.length ? obj.ui_actions.chips.slice(0,3) :
-          (need === "fecha" ? ["Mañana","Viernes","Lunes"] :
-           need === "hora" ? ["10:00","12:00","17:00"] :
-           need === "servicio" ? ["Limpieza","Revisión","Consulta"] :
+          (need === "fecha" ? ["Mañana","Viernes","Sábado"] :
+           need === "hora" ? ["13:30","15:00","21:00"] :
+           need === "servicio" ? (sector === "restaurante" ? ["Reservar mesa","Consulta menú"] : ["Limpieza","Revisión","Consulta"]) :
+           need === "personas" ? ["2 personas","4 personas","6 personas"] :
            need === "nombre" ? ["Ana","Carlos","Lucía"] : []);
       }
     }
@@ -290,6 +325,7 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "Server error", detail: String(e?.message || e) });
   }
 }
+
 
 
 
