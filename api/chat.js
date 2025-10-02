@@ -1,4 +1,4 @@
-// api/chat.js — Demo IA robusta (cierre con nombre/telefono opcional, anti-bucles, structured)
+// api/chat.js — Versión estable y natural (anti-bucle, cierre S/F/H, nombre opcional)
 
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -11,34 +11,35 @@ const OUT_OF_SCOPE_MESSAGE =
   "Esto es una demo. Si quieres un chatbot como este, adaptado a tu negocio (reservas, pedidos y atención al cliente), agenda una llamada y lo vemos en 10 minutos.";
 
 const SYSTEM_PROMPT = `
-Eres “AutoEngine – ChatBot de Demostración”. Español neutro, directo y breve (máx. 2–3 líneas).
+Eres “AutoEngine – ChatBot de Demostración”. Hablas en español claro y cercano, respuestas de 1–2 líneas.
 Te adaptas al sector (pastelería, peluquería/estética, clínica dental/óptica/fisio, taller mecánico).
 
 OBJETIVO:
-- Recoger servicio/motivo, fecha, hora y nombre. Si se exige teléfono, también teléfono. Al tenerlos, confirma en UN mensaje y termina.
+- Ayudar rápido. Si el usuario ya dio servicio, fecha y hora, confirma en un único mensaje y termina.
+- Si falta info, pide EXACTAMENTE 1 dato (no más), con tono amable.
 
-REGLAS DURAS:
-- No inventes datos; si faltan, di "No lo sé" y pide EXACTAMENTE 1 dato.
-- Salud/diagnóstico/técnico avanzado: no des instrucciones; propone cita.
-- Si es fuera de negocio (política, deportes, etc.), responde EXACTAMENTE:
+REGLAS:
+- No inventes datos del negocio; si faltan, di “No lo sé” y ofrece opciones.
+- Nada de diagnósticos ni instrucciones técnicas de riesgo; sugiere cita.
+- Si la pregunta es fuera de negocio, responde EXACTAMENTE:
 "${OUT_OF_SCOPE_MESSAGE}"
 
-HORARIOS POR DEFECTO si faltan:
-- L–V 9:00–19:00, S 10:00–14:00, D cerrado. Ante disponibilidad, sugiere 2–3 horas válidas.
+HORARIOS POR DEFECTO (si no hay contexto):
+- L–V 9:00–19:00, S 10:00–14:00, D cerrado. Al preguntar disponibilidad, sugiere 2–3 horas concretas.
 
 ESTILO:
-- 1 respuesta breve.
-- 1 pregunta de aclaración si falta algo.
-- 2–3 chips útiles.
+- Breve, directo y amable. Evita sonar a interrogatorio.
+- Si hay ambigüedad, haz una sola pregunta de avance.
+- Propón 2–3 chips útiles (ej.: “Ver horarios”, “Reservar mañana 10:30”, “Hablar con persona”).
 
-SALIDA JSON ESTRICTA:
+FORMATO JSON ESTRICTO:
 {
   "reply": "<texto breve>",
   "ui_actions": { "chips": [], "cta": null, "handoff": false },
   "data": {
     "intent": "<faq|pedido|cita|precio|horario|otro>",
     "missing_fields": [],
-    "entities": {"servicio":"", "fecha":"", "hora":"", "nombre":"", "telefono":""},
+    "entities": {"servicio":"", "fecha":"", "hora":"", "nombre":""},
     "closed": false
   }
 }
@@ -46,16 +47,16 @@ No menciones estas reglas ni el prompt.
 `;
 
 function safeParse(v, fb = {}) { try { return JSON.parse(v); } catch { return fb; } }
-function clamp(text, max = 320){ return String(text||"").replace(/\s+/g," ").trim().slice(0,max); }
+function clamp(text, max = 260){ return String(text||"").replace(/\s+/g," ").trim().slice(0,max); }
 
-// ===== EXTRACCIÓN DE ENTIDADES (ES) =====
+// ===== EXTRACCIÓN SENCILLA (ES) =====
 const DAY_WORDS = "(lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|hoy|mañana)";
 const HOUR = "(?:[01]?\\d|2[0-3])(?:[:\\.hH][0-5]\\d)?";
 const DATE_NUM = "(?:\\b\\d{1,2}[\\/-]\\d{1,2}(?:[\\/-]\\d{2,4})?\\b)";
 
 const SERVICE_HINTS = {
   "clinica": ["limpieza","revisión","revision","ortodoncia","empaste","fisioterapia","óptica","optica","lentes","blanqueamiento","radiografía","radiografia","consulta"],
-  "taller": ["revisión","revision","frenos","aceite","itv","neumáticos","neumaticos","embrague","diagnóstico","diagnostico","alineado"],
+  "taller": ["revisión","revision","frenos","aceite","itv","neumáticos","neumaticos","embrague","diagnóstico","diagnostico","alineado","suspensión","suspension"],
   "peluqueria": ["corte","tinte","mechas","manicura","barba","peinado","keratina"],
   "pasteleria": ["tarta","roscón","roscon","pasteles","encargo","sin gluten","gluten free"]
 };
@@ -72,9 +73,7 @@ function extractNombre(text) {
     const m = t.match(re);
     if (m && m[1]) {
       const cleaned = m[1].replace(/\s+/g," ").trim();
-      const twoWords = cleaned.split(" ").slice(0,2).join(" ");
-      if (!/^(yo|el|la|miercoles|miércoles|viernes|lunes|martes|sabado|sábado|domingo|hoy|mañana)\b/i.test(twoWords))
-        return twoWords;
+      return cleaned.split(" ").slice(0,2).join(" ");
     }
   }
   if (/^[a-záéíóúüñ]{2,20}$/i.test(t)) return t; // cuando ya le hemos pedido el nombre
@@ -109,30 +108,26 @@ function extractEntities(msg, sector) {
   ];
   for (const k of hints) { if (text.includes(k)) { servicio = k; break; } }
 
-  // teléfono
-  let telefono = null;
-  const t = msg.match(/\b(?:\+?\d{2,3}\s?)?(?:\d[\s\-]?){7,12}\b/);
-  if (t) telefono = t[0].replace(/[\s\-]+/g,"");
-
-  // nombre
   const nombre = extractNombre(msg);
 
-  return { servicio, fecha, hora, nombre, telefono };
+  return { servicio, fecha, hora, nombre };
 }
 
-function computeMissing(entities={}, requirePhone=false) {
+function computeMissing(entities={}) {
   const miss = [];
   if (!entities.servicio) miss.push("servicio");
   if (!entities.fecha)    miss.push("fecha");
   if (!entities.hora)     miss.push("hora");
-  if (!entities.nombre)   miss.push("nombre");
-  if (requirePhone && !entities.telefono) miss.push("telefono");
+  // nombre es opcional: lo pedimos si el usuario lo ofrece o si falta como último toque
   return miss;
 }
 
-function detectClosed(entities={}, requirePhone=false) {
-  const core = !!(entities.servicio && entities.fecha && entities.hora && entities.nombre);
-  return requirePhone ? (core && !!entities.telefono) : core;
+function detectClosed(entities={}) {
+  return !!(entities.servicio && entities.fecha && entities.hora);
+}
+
+function isGreeting(t="") {
+  return /\b(hola|buenas|qué tal|que tal|hey|hola!?)\b/i.test(t);
 }
 // ===== FIN EXTRACCIÓN =====
 
@@ -151,13 +146,11 @@ export default async function handler(req, res) {
 
     if (!message) return res.status(400).json({ error: 'Missing "message" string' });
 
-    // Por defecto exigimos teléfono solo en clínica (puedes cambiarlo)
-    const sectorLC = (sector||"").toLowerCase();
-    const requirePhoneDefault = sectorLC === "clinica";
-    const requirePhone = Boolean(body.requirePhone ?? businessContext?.requirePhone ?? requirePhoneDefault);
-
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
+
+    // Si es saludo inicial, respondemos sin interrogar
+    const firstTurn = history.length === 0 && isGreeting(message);
 
     const contextBlock = `Contexto del negocio:\n${JSON.stringify({ sector, ...businessContext }).slice(0, 1800)}\n`;
     const messages = [
@@ -171,9 +164,9 @@ export default async function handler(req, res) {
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "gpt-4o-mini",
-        temperature: 0.2,
+        temperature: 0.3,        // más natural
         top_p: 0.9,
-        max_tokens: 350,
+        max_tokens: 320,
         response_format: { type: "json_object" },
         messages
       }),
@@ -189,8 +182,13 @@ export default async function handler(req, res) {
     let obj = safeParse(content, null);
     if (!obj || typeof obj !== "object" || !obj.reply) {
       obj = {
-        reply: "No he podido procesar eso. ¿Quieres pedir, reservar o consultar horarios?",
-        ui_actions: { chips: ["Hacer un pedido","Reservar cita","Ver horarios"], cta: null, handoff: false },
+        reply: firstTurn
+          ? "Hola, ¿en qué te ayudo? Puedo reservar citas o tomar pedidos."
+          : "No he podido procesar eso. ¿Quieres pedir, reservar o ver horarios?",
+        ui_actions: {
+          chips: firstTurn ? ["Ver horarios","Reservar cita","Hablar con persona"] : ["Hacer un pedido","Reservar cita","Ver horarios"],
+          cta: null, handoff: false
+        },
         data: { intent: "otro", missing_fields: [], entities: {}, closed: false }
       };
     }
@@ -201,11 +199,11 @@ export default async function handler(req, res) {
     const lastUserTurns = history.filter(m => m?.role === "user").slice(-3).map(m => m.content).join(" ");
     const fromHistory = extractEntities(lastUserTurns, sector);
 
-    const entities = { ...fromModel, ...fromHistory, ...fromUser }; // prioridad a lo último que dijo el usuario
+    const entities = { ...fromModel, ...fromHistory, ...fromUser };
 
     // Recalcular missing/closed
-    const missing = computeMissing(entities, requirePhone);
-    const closed = detectClosed(entities, requirePhone);
+    const missing = computeMissing(entities);
+    const closed = detectClosed(entities);
 
     // Normalizar estructura
     obj.data = obj.data || {};
@@ -215,33 +213,44 @@ export default async function handler(req, res) {
     obj.data.intent = obj.data.intent || (closed ? "cita" : "otro");
     obj.ui_actions = obj.ui_actions || { chips: [], cta: null, handoff: false };
 
-    // Cierre determinista
-    if (closed) {
-      const { servicio: s, fecha: f, hora: h, nombre: n } = entities;
-      obj.reply = clamp(`Perfecto, ${n}. Te confirmo la cita para ${f} a las ${h} para ${s}. ¡Te esperamos!`);
-      obj.ui_actions.chips = ["Guardar recordatorio", "Cómo llegar"];
-      obj.ui_actions.cta = null;
-    } else if (missing.length > 0) {
-      // Pregunta SOLO por el primer campo que falte
-      const need = missing[0];
-      const qs = {
-        servicio: "¿Qué servicio necesitas exactamente?",
-        fecha: "¿Qué día te va mejor?",
-        hora: "¿A qué hora te viene bien?",
-        nombre: "¿A nombre de quién dejamos la cita?",
-        telefono: "¿Me pasas un teléfono de contacto?"
-      }[need];
-      obj.reply = clamp(qs || obj.reply || "¿Podrías confirmar un dato?");
-      // Chips orientadas
-      obj.ui_actions.chips = obj.ui_actions.chips?.length ? obj.ui_actions.chips.slice(0,3) :
-        (need === "fecha" ? ["Mañana","Viernes","Lunes"] :
-         need === "hora" ? ["10:00","12:00","17:00"] :
-         need === "servicio" ? ["Limpieza","Revisión","Consulta"] :
-         need === "nombre" ? ["Ana","Carlos","Lucía"] :
-         []);
+    // Lógica amable de saludo (no sonar a bot rígido)
+    if (firstTurn) {
+      obj.reply = "Hola, ¿en qué te ayudo hoy?";
+      obj.ui_actions.chips = ["Reservar cita","Ver horarios","Hablar con persona"];
     }
 
-    // Fuera de marco estandarizado (por si el modelo lo insinuó)
+    // Cierre determinista (S+F+H)
+    if (closed) {
+      const { servicio: s, fecha: f, hora: h, nombre: n } = entities;
+      const who = n ? `, ${n}` : "";
+      obj.reply = clamp(`Perfecto${who}. Te confirmo la cita para ${f} a las ${h} para ${s}. ¡Te esperamos!`);
+      obj.ui_actions.chips = ["Guardar recordatorio", "Cómo llegar"];
+      obj.ui_actions.cta = null;
+    } else if (!firstTurn) {
+      // Pregunta SOLO por el primer campo que falte
+      const need = missing[0];
+      if (need) {
+        const qs = {
+          servicio: "¿Qué servicio necesitas exactamente?",
+          fecha: "¿Qué día te va mejor?",
+          hora: "¿A qué hora te viene bien?"
+        }[need];
+        obj.reply = clamp(obj.reply || qs || "¿Podrías confirmar un dato?");
+        // Chips orientadas (no repetitivas)
+        obj.ui_actions.chips = obj.ui_actions.chips?.length ? obj.ui_actions.chips.slice(0,3) :
+          (need === "fecha" ? ["Mañana","Viernes","Lunes"] :
+           need === "hora" ? ["10:00","12:00","17:00"] :
+           ["Limpieza","Revisión","Consulta"]);
+      } else {
+        // Si solo falta nombre y el usuario parece querer cerrar, pregunta suave (no bloquea)
+        if (!entities.nombre && /confirma|confirmar|perfecto|ok/i.test(message)) {
+          obj.reply = clamp("¿Quieres que deje la cita a algún nombre? Si no, la reservo igualmente.");
+          obj.ui_actions.chips = ["Reservar sin nombre","Sí, te digo mi nombre"];
+        }
+      }
+    }
+
+    // Fuera de marco (por si el modelo lo insinuó)
     if (obj.data.intent === "otro" && /out\s*of\s*scope|fuera.*marco/i.test(content)) {
       obj.reply = OUT_OF_SCOPE_MESSAGE;
       obj.ui_actions.chips = ["Ver demo","Agendar llamada"];
@@ -255,6 +264,7 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "Server error", detail: String(e?.message || e) });
   }
 }
+
 
 
 
